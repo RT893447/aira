@@ -1,0 +1,542 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Write project
+        run: |
+          mkdir -p app/src/main/java/com/aira/wzhelper
+          mkdir -p app/src/main/res/xml
+
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "AIRA"
+          include ':app'
+          EOF
+
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
+          cat > app/build.gradle << 'EOF'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.aira.wzhelper'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.aira.wzhelper"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="AIRA"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".ClickService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+
+                  <service
+                      android:name=".FloatService"
+                      android:exported="false" />
+
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/accessibility_config.xml << 'EOF'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="100" />
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/MainActivity.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.provider.Settings;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  checkAndStart();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  checkAndStart();
+              }
+
+              private void checkAndStart() {
+                  if (!Settings.canDrawOverlays(this)) {
+                      startActivity(new Intent(
+                              Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                              Uri.parse("package:" + getPackageName())));
+                  } else {
+                      startService(new Intent(this, FloatService.class));
+                      finish();
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/ScreenProfile.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.content.Context;
+          import android.graphics.Point;
+          import android.os.Build;
+          import android.util.DisplayMetrics;
+          import android.view.WindowManager;
+
+          public class ScreenProfile {
+
+              public final int widthPx;
+              public final int heightPx;
+              public final float density;
+
+              private ScreenProfile(int w, int h, float d) {
+                  widthPx = w; heightPx = h; density = d;
+              }
+
+              @SuppressWarnings("deprecation")
+              public static ScreenProfile from(Context ctx) {
+                  WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      android.view.WindowMetrics metrics = wm.getMaximumWindowMetrics();
+                      android.graphics.Rect b = metrics.getBounds();
+                      DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+                      return new ScreenProfile(b.width(), b.height(), dm.density);
+                  } else {
+                      Point p = new Point();
+                      wm.getDefaultDisplay().getRealSize(p);
+                      DisplayMetrics dm = new DisplayMetrics();
+                      wm.getDefaultDisplay().getRealMetrics(dm);
+                      return new ScreenProfile(p.x, p.y, dm.density);
+                  }
+              }
+
+              public float toX(float xPct, float offsetDp) {
+                  return xPct * widthPx + offsetDp * density;
+              }
+
+              public float toY(float yPct, float offsetDp) {
+                  return yPct * heightPx + offsetDp * density;
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/PctStep.java << 'EOF'
+          package com.aira.wzhelper;
+
+          public class PctStep {
+              public final float xPct;
+              public final float yPct;
+              public final float offXDp;
+              public final float offYDp;
+              public final long delayAfterMs;
+
+              public PctStep(float xPct, float yPct, float offXDp, float offYDp, long delayAfterMs) {
+                  this.xPct = xPct; this.yPct = yPct;
+                  this.offXDp = offXDp; this.offYDp = offYDp;
+                  this.delayAfterMs = delayAfterMs;
+              }
+
+              public PctStep(float xPct, float yPct, long delayAfterMs) {
+                  this(xPct, yPct, 0f, 0f, delayAfterMs);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/ClickService.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.accessibilityservice.GestureDescription;
+          import android.graphics.Path;
+          import android.view.accessibility.AccessibilityEvent;
+
+          public class ClickService extends AccessibilityService {
+
+              private static ClickService instance;
+
+              @Override
+              protected void onServiceConnected() {
+                  instance = this;
+              }
+
+              public static ClickService get() { return instance; }
+
+              public void tap(float x, float y, long durationMs) {
+                  Path path = new Path();
+                  path.moveTo(x, y);
+                  GestureDescription.StrokeDescription stroke =
+                          new GestureDescription.StrokeDescription(path, 0, Math.max(1, durationMs));
+                  GestureDescription gesture = new GestureDescription.Builder()
+                          .addStroke(stroke)
+                          .build();
+                  dispatchGesture(gesture, null, null);
+              }
+
+              public void tapHuman(float x, float y, int jitterPx) {
+                  float nx = x + (float)((Math.random() - 0.5) * 2 * jitterPx);
+                  float ny = y + (float)((Math.random() - 0.5) * 2 * jitterPx);
+                  tap(nx, ny, 20 + (long)(Math.random() * 20));
+              }
+
+              @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+              @Override public void onInterrupt() {}
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/GestureRunner.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.content.Context;
+          import android.os.Handler;
+          import android.os.Looper;
+
+          public class GestureRunner {
+
+              private static ScreenProfile screen;
+
+              public static void init(Context ctx) {
+                  screen = ScreenProfile.from(ctx);
+              }
+
+              public static final PctStep[] SWAP_NAMEDAO = {
+                      new PctStep(0.165f, 0.200f, 120),
+                      new PctStep(0.908f, 0.359f, 140),
+                      new PctStep(0.919f, 0.044f, 120),
+                      new PctStep(0.292f, 0.181f, 0)
+              };
+
+              public static final PctStep[] SWAP_FUHJIA = {
+                      new PctStep(0.165f, 0.200f, 120),
+                      new PctStep(0.908f, 0.359f, 140),
+                      new PctStep(0.919f, 0.044f, 120),
+                      new PctStep(0.160f, 0.204f, 0)
+              };
+
+              public static void run(PctStep[] seq, int jitterPx,
+                                     float calibXDp, float calibYDp, Runnable onFinish) {
+                  ClickService svc = ClickService.get();
+                  if (svc == null || screen == null) return;
+
+                  Handler h = new Handler(Looper.getMainLooper());
+                  final int[] idx = {0};
+
+                  Runnable r = new Runnable() {
+                      @Override public void run() {
+                          if (idx[0] >= seq.length) {
+                              if (onFinish != null) onFinish.run();
+                              return;
+                          }
+                          PctStep s = seq[idx[0]++];
+                          float px = screen.toX(s.xPct, s.offXDp + calibXDp);
+                          float py = screen.toY(s.yPct, s.offYDp + calibYDp);
+                          svc.tapHuman(px, py, jitterPx);
+
+                          long base = s.delayAfterMs;
+                          long wait = base > 0 ? base + (long)((Math.random() - 0.5) * base * 0.6) : 0;
+                          if (wait > 0) h.postDelayed(this, wait);
+                          else this.run();
+                      }
+                  };
+                  h.post(r);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/CoordPicker.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.content.Context;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.WindowManager;
+
+          public class CoordPicker {
+
+              public interface Callback { void onPick(float xPct, float yPct); }
+
+              private final WindowManager wm;
+              private final View overlay;
+              private final ScreenProfile screen;
+
+              public CoordPicker(Context ctx, Callback cb) {
+                  wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+                  screen = ScreenProfile.from(ctx);
+
+                  overlay = new View(ctx);
+                  overlay.setBackgroundColor(Color.parseColor("#3300E5FF"));
+
+                  WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                  | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                          PixelFormat.TRANSLUCENT);
+                  lp.gravity = Gravity.TOP | Gravity.START;
+
+                  overlay.setOnTouchListener((v, e) -> {
+                      if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                          float xPct = e.getRawX() / screen.widthPx;
+                          float yPct = e.getRawY() / screen.heightPx;
+                          cb.onPick(xPct, yPct);
+                          dismiss();
+                          return true;
+                      }
+                      return false;
+                  });
+
+                  wm.addView(overlay, lp);
+              }
+
+              public void dismiss() {
+                  if (overlay != null && overlay.isAttachedToWindow()) {
+                      wm.removeView(overlay);
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/aira/wzhelper/FloatService.java << 'EOF'
+          package com.aira.wzhelper;
+
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.os.IBinder;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class FloatService extends Service {
+
+              private WindowManager wm;
+              private View panel;
+              private WindowManager.LayoutParams params;
+              private float calibX = 0f, calibY = 0f;
+              private SharedPreferences sp;
+
+              @Override
+              public IBinder onBind(Intent intent) { return null; }
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                  sp = getSharedPreferences("aira", MODE_PRIVATE);
+                  GestureRunner.init(this);
+                  loadCalib();
+                  buildPanel();
+              }
+
+              private void loadCalib() {
+                  calibX = sp.getFloat("calibX", 0f);
+                  calibY = sp.getFloat("calibY", 0f);
+              }
+
+              private void saveCalib(float dx, float dy) {
+                  calibX = dx; calibY = dy;
+                  sp.edit().putFloat("calibX", dx).putFloat("calibY", dy).apply();
+              }
+
+              private void buildPanel() {
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.parseColor("#CC101018"));
+                  root.setPadding(28, 24, 28, 24);
+
+                  TextView title = new TextView(this);
+                  title.setText("AIRA");
+                  title.setTextColor(Color.parseColor("#00E5FF"));
+                  title.setTextSize(12);
+                  title.setGravity(Gravity.CENTER);
+                  root.addView(title);
+
+                  Button swapBtn = new Button(this);
+                  swapBtn.setText("秒换装");
+                  swapBtn.setTextColor(Color.WHITE);
+                  swapBtn.setBackgroundColor(Color.parseColor("#D32F2F"));
+                  swapBtn.setOnClickListener(v ->
+                          GestureRunner.run(GestureRunner.SWAP_NAMEDAO, 8, calibX, calibY, () ->
+                                  GestureRunner.run(GestureRunner.SWAP_FUHJIA, 8, calibX, calibY, null)));
+                  root.addView(swapBtn);
+
+                  Button pickBtn = new Button(this);
+                  pickBtn.setText("拾取坐标");
+                  pickBtn.setTextColor(Color.WHITE);
+                  pickBtn.setBackgroundColor(Color.parseColor("#333355"));
+                  pickBtn.setOnClickListener(v -> {
+                      panel.setVisibility(View.GONE);
+                      new CoordPicker(this, (x, y) -> {
+                          android.util.Log.d("AIRA", "pick: " + x + "," + y);
+                          android.widget.Toast.makeText(this,
+                                  x + " , " + y, android.widget.Toast.LENGTH_LONG).show();
+                          panel.setVisibility(View.VISIBLE);
+                      });
+                  });
+                  root.addView(pickBtn);
+
+                  LinearLayout calibRow = new LinearLayout(this);
+                  calibRow.setOrientation(LinearLayout.HORIZONTAL);
+                  String[] labels = {"X-", "X+", "Y-", "Y+"};
+                  for (int i = 0; i < labels.length; i++) {
+                      Button b = new Button(this);
+                      b.setText(labels[i]);
+                      b.setTextSize(10);
+                      b.setTextColor(Color.WHITE);
+                      b.setBackgroundColor(Color.parseColor("#444466"));
+                      final int k = i;
+                      b.setOnClickListener(v -> {
+                          float dx = calibX, dy = calibY;
+                          if (k == 0) dx -= 1f;
+                          if (k == 1) dx += 1f;
+                          if (k == 2) dy -= 1f;
+                          if (k == 3) dy += 1f;
+                          saveCalib(dx, dy);
+                      });
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                              0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                      calibRow.addView(b, lp);
+                  }
+                  root.addView(calibRow);
+
+                  root.setOnTouchListener(new View.OnTouchListener() {
+                      float downX, downY;
+                      int startX, startY;
+                      @Override public boolean onTouch(View v, MotionEvent e) {
+                          switch (e.getAction()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  downX = e.getRawX(); downY = e.getRawY();
+                                  startX = params.x; startY = params.y;
+                                  return false;
+                              case MotionEvent.ACTION_MOVE:
+                                  params.x = startX + (int)(e.getRawX() - downX);
+                                  params.y = startY + (int)(e.getRawY() - downY);
+                                  wm.updateViewLayout(panel, params);
+                                  return true;
+                          }
+                          return false;
+                      }
+                  });
+
+                  params = new WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                  | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.TRANSLUCENT);
+                  params.gravity = Gravity.TOP | Gravity.START;
+                  params.x = 40;
+                  params.y = 300;
+
+                  panel = root;
+                  wm.addView(panel, params);
+              }
+
+              @Override public void onDestroy() {
+                  super.onDestroy();
+                  if (panel != null && panel.isAttachedToWindow()) {
+                      wm.removeView(panel);
+                  }
+              }
+          }
+          EOF
+
+      - name: Install SDK bits
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Build
+        run: gradle assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
